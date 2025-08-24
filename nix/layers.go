@@ -4,6 +4,9 @@ import (
 	_ "crypto/sha256"
 	_ "crypto/sha512"
 	"reflect"
+	"runtime"
+	"strconv"
+	"sync"
 
 	"github.com/nlewo/nix2container/types"
 	godigest "github.com/opencontainers/go-digest"
@@ -65,43 +68,124 @@ func getPaths(storePaths []string, parents []types.Layer, rewrites []types.Rewri
 // the disk. This is useful for layer containing non reproducible
 // store paths.
 func newLayers(paths types.Paths, tarDirectory string, maxLayers int, history v1.History) (layers []types.Layer, err error) {
-	offset := 0
-	for offset < len(paths) {
-		max := offset + 1
-		if offset == maxLayers-1 {
-			max = len(paths)
-		}
-		layerPaths := paths[offset:max]
-		layerPath := ""
-		var digest godigest.Digest
-		var size int64
-		if tarDirectory == "" {
-			digest, size, err = TarPathsSum(layerPaths)
-		} else {
-			layerPath, digest, size, err = TarPathsWrite(paths, tarDirectory)
-		}
-		if err != nil {
-			return layers, err
-		}
-		logrus.Infof("Adding %d paths to layer (size:%d digest:%s)", len(layerPaths), size, digest.String())
-		layer := types.Layer{
-			Digest:    digest.String(),
-			DiffIDs:   digest.String(),
-			Size:      size,
-			Paths:     layerPaths,
-			MediaType: v1.MediaTypeImageLayer,
-			History:   history,
-		}
-		if tarDirectory != "" {
-			// TODO: we should use v1.MediaTypeImageLayerGzip instead
-			layer.MediaType = v1.MediaTypeImageLayer
-			layer.LayerPath = layerPath
-		}
-
-		layers = append(layers, layer)
-
-		offset = max
+	totalPaths := len(paths)
+	if totalPaths == 0 {
+		return []types.Layer{}, nil
 	}
+	if maxLayers < 1 {
+		maxLayers = 1
+	}
+	numLayers := maxLayers
+	if totalPaths < maxLayers {
+		numLayers = totalPaths
+	}
+
+	type layerJob struct {
+		index      int
+		layerPaths types.Paths
+	}
+	jobs := make([]layerJob, 0, numLayers)
+	for i := 0; i < numLayers; i++ {
+		end := i + 1
+		if i == numLayers-1 {
+			end = totalPaths
+		}
+		jobs = append(jobs, layerJob{index: i, layerPaths: paths[i:end]})
+	}
+
+	workers := 0
+	if v := "64"; v != "" {
+		if n, convErr := strconv.Atoi(v); convErr == nil && n > 0 {
+			workers = n
+		}
+	}
+	if workers <= 0 {
+		p := runtime.GOMAXPROCS(0)
+		if p > 16 {
+			p = 16
+		}
+		if p > numLayers {
+			p = numLayers
+		}
+		if p < 1 {
+			p = 1
+		}
+		workers = p
+	}
+
+	type result struct {
+		index int
+		layer types.Layer
+		err   error
+	}
+
+	jobCh := make(chan layerJob)
+	resCh := make(chan result, numLayers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for j := range jobCh {
+				var (
+					d  godigest.Digest
+					sz int64
+					lp string
+					e  error
+				)
+				if tarDirectory == "" {
+					d, sz, e = TarPathsSum(j.layerPaths)
+				} else {
+					lp, d, sz, e = TarPathsWrite(j.layerPaths, tarDirectory)
+				}
+				if e != nil {
+					resCh <- result{index: j.index, err: e}
+					continue
+				}
+
+				logrus.Infof("Adding %d paths to layer (size:%d digest:%s)", len(j.layerPaths), sz, d.String())
+				lay := types.Layer{
+					Digest:    d.String(),
+					DiffIDs:   d.String(),
+					Size:      sz,
+					Paths:     j.layerPaths,
+					MediaType: v1.MediaTypeImageLayer,
+					History:   history,
+				}
+				if tarDirectory != "" {
+					// TODO: we should use v1.MediaTypeImageLayerGzip instead
+					lay.MediaType = v1.MediaTypeImageLayer
+					lay.LayerPath = lp
+				}
+				resCh <- result{index: j.index, layer: lay, err: nil}
+			}
+		}()
+	}
+
+	go func() {
+		for _, j := range jobs {
+			jobCh <- j
+		}
+		close(jobCh)
+	}()
+
+	layersByIndex := make([]types.Layer, numLayers)
+	var firstErr error
+	for i := 0; i < numLayers; i++ {
+		r := <-resCh
+		if r.err != nil && firstErr == nil {
+			firstErr = r.err
+		}
+		layersByIndex[r.index] = r.layer
+	}
+	wg.Wait()
+	close(resCh)
+	if firstErr != nil {
+		return layers, firstErr
+	}
+
+	layers = append(layers, layersByIndex...)
 	return layers, nil
 }
 
