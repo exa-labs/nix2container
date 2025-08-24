@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+    "time"
 
 	"github.com/nlewo/nix2container/closure"
 	"github.com/nlewo/nix2container/nix"
@@ -35,12 +36,18 @@ var layersReproducibleCmd = &cobra.Command{
 	Short: "Generate a layers.json file from a list of reproducible paths",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+        start := time.Now()
+        logrus.Infof("nix2container: reproducible layering start (sortBy=%s, maxLayers=%d)", sortBy, maxLayers)
+
+        step := time.Now()
 		closureGraph, err := closure.ReadClosureGraphFile(args[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("read closure graph: %v", time.Since(step))
 		var storepaths []string
+        step = time.Now()
 		switch sortBy {
 		case "nar-size":
 			storepaths, err = closure.SortedPathsByNarSize(closureGraph)
@@ -51,46 +58,61 @@ var layersReproducibleCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("sorted storepaths (%s): %v (count=%d)", sortBy, time.Since(step), len(storepaths))
+
+        step = time.Now()
 		parents, err := getLayersFromFiles(args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("loaded parents: %v (parents=%d)", time.Since(step), len(parents))
 		var perms []types.PermPath
 		if permsFilepath != "" {
+            step = time.Now()
 			perms, err = readPermsFile(permsFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read perms: %v (entries=%d)", time.Since(step), len(perms))
 		}
 		var rewrites []types.RewritePath
 		if rewritesFilepath != "" {
+            step = time.Now()
 			rewrites, err = readRewritesFile(rewritesFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read rewrites: %v (entries=%d)", time.Since(step), len(rewrites))
 		}
 		var history v1.History
 		if historyFilepath != "" {
+            step = time.Now()
 			history, err = readHistoryFile(historyFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read history: %v", time.Since(step))
 		}
-
+        step = time.Now()
 		layers, err := nix.NewLayers(storepaths, maxLayers, parents, rewrites, ignore, perms, history)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("build layers: %v (layers=%d)", time.Since(step), len(layers))
+
+        step = time.Now()
 		err = layersToJson(args[0], layers)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("write layers.json: %v", time.Since(step))
+        logrus.Infof("total (reproducible): %v", time.Since(start))
 	},
 }
 
@@ -100,12 +122,18 @@ var layersNonReproducibleCmd = &cobra.Command{
 	Short: "Generate a layers.json file from a list of paths",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
+        start := time.Now()
+        logrus.Infof("nix2container: non-reproducible layering start (sortBy=%s, maxLayers=%d, tarDir=%s)", sortBy, maxLayers, tarDirectory)
+
+        step := time.Now()
 		closureGraph, err := closure.ReadClosureGraphFile(args[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("read closure graph: %v", time.Since(step))
 		var storepaths []string
+        step = time.Now()
 		switch sortBy {
 		case "nar-size":
 			storepaths, err = closure.SortedPathsByNarSize(closureGraph)
@@ -116,46 +144,61 @@ var layersNonReproducibleCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("sorted storepaths (%s): %v (count=%d)", sortBy, time.Since(step), len(storepaths))
+
+        step = time.Now()
 		parents, err := getLayersFromFiles(args[2:])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("loaded parents: %v (parents=%d)", time.Since(step), len(parents))
 		var perms []types.PermPath
 		if permsFilepath != "" {
+            step = time.Now()
 			perms, err = readPermsFile(permsFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read perms: %v (entries=%d)", time.Since(step), len(perms))
 		}
 		var rewrites []types.RewritePath
 		if rewritesFilepath != "" {
+            step = time.Now()
 			rewrites, err = readRewritesFile(rewritesFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read rewrites: %v (entries=%d)", time.Since(step), len(rewrites))
 		}
 		var history v1.History
 		if historyFilepath != "" {
+            step = time.Now()
 			history, err = readHistoryFile(historyFilepath)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "%s", err)
 				os.Exit(1)
 			}
+            logrus.Infof("read history: %v", time.Since(step))
 		}
-
+        step = time.Now()
 		layers, err := nix.NewLayersNonReproducible(storepaths, maxLayers, tarDirectory, parents, rewrites, ignore, perms, history)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("build layers (non-reproducible): %v (layers=%d)", time.Since(step), len(layers))
+
+        step = time.Now()
 		err = layersToJson(args[0], layers)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
+        logrus.Infof("write layers.json: %v", time.Since(step))
+        logrus.Infof("total (non-reproducible): %v", time.Since(start))
 	},
 }
 
