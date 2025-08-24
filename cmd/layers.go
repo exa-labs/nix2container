@@ -27,6 +27,7 @@ var permsFilepath string
 var rewritesFilepath string
 var historyFilepath string
 var maxLayers int
+var sortBy string
 
 // layerCmd represents the layer command
 var layersReproducibleCmd = &cobra.Command{
@@ -39,7 +40,13 @@ var layersReproducibleCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
-		storepaths, err := closure.SortedPathsByPopularity(closureGraph)
+		var storepaths []string
+		switch sortBy {
+		case "nar-size":
+			storepaths, err = closure.SortedPathsByNarSize(closureGraph)
+		default:
+			storepaths, err = closure.SortedPathsByPopularity(closureGraph)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
@@ -98,7 +105,13 @@ var layersNonReproducibleCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
 		}
-		storepaths, err := closure.SortedPathsByPopularity(closureGraph)
+		var storepaths []string
+		switch sortBy {
+		case "nar-size":
+			storepaths, err = closure.SortedPathsByNarSize(closureGraph)
+		default:
+			storepaths, err = closure.SortedPathsByPopularity(closureGraph)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s", err)
 			os.Exit(1)
@@ -180,6 +193,7 @@ func init() {
 	layersNonReproducibleCmd.Flags().StringVarP(&permsFilepath, "perms", "", "", "A JSON file containing file permissions")
 	layersNonReproducibleCmd.Flags().StringVarP(&historyFilepath, "history", "", "", "A JSON file containing layer history")
 	layersNonReproducibleCmd.Flags().IntVarP(&maxLayers, "max-layers", "", 1, "The maximum number of layers")
+	layersNonReproducibleCmd.Flags().StringVarP(&sortBy, "sort-by", "", "popularity", "Sort store paths by: popularity|nar-size")
 
 	rootCmd.AddCommand(layersReproducibleCmd)
 	layersReproducibleCmd.Flags().StringVarP(&ignore, "ignore", "", "", "Ignore the path from the list of storepaths")
@@ -187,5 +201,6 @@ func init() {
 	layersReproducibleCmd.Flags().StringVarP(&permsFilepath, "perms", "", "", "A JSON file containing file permissions")
 	layersReproducibleCmd.Flags().StringVarP(&historyFilepath, "history", "", "", "A JSON file containing layer history")
 	layersReproducibleCmd.Flags().IntVarP(&maxLayers, "max-layers", "", 1, "The maximum number of layers")
+	layersReproducibleCmd.Flags().StringVarP(&sortBy, "sort-by", "", "popularity", "Sort store paths by: popularity|nar-size")
 
 }

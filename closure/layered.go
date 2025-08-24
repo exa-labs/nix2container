@@ -4,6 +4,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"gonum.org/v1/gonum/graph"
 	"gonum.org/v1/gonum/graph/simple"
+	"sort"
 )
 
 func buildGraph(storepaths []Storepath) (map[string]int64, *simple.DirectedGraph) {
@@ -54,4 +55,29 @@ func SortedPathsByPopularity(storepaths []Storepath) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+// SortedPathsByNarSize sorts storepaths by descending NAR size.
+// If two paths have the same size, they are ordered lexicographically by path
+// to keep the ordering deterministic.
+func SortedPathsByNarSize(storepaths []Storepath) ([]string, error) {
+    type sizedPath struct {
+        path string
+        size int64
+    }
+    sized := make([]sizedPath, 0, len(storepaths))
+    for _, sp := range storepaths {
+        sized = append(sized, sizedPath{path: sp.Path, size: sp.NarSize})
+    }
+    sort.Slice(sized, func(i, j int) bool {
+        if sized[i].size == sized[j].size {
+            return sized[i].path < sized[j].path
+        }
+        return sized[i].size > sized[j].size
+    })
+    out := make([]string, len(sized))
+    for i, s := range sized {
+        out[i] = s.path
+    }
+    return out, nil
 }
