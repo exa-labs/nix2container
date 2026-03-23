@@ -53,13 +53,21 @@ let
       ''
         mkdir -p vendor/github.com/nlewo/nix2container/
         cp -r ${nix2container-bin.src}/* vendor/github.com/nlewo/nix2container/
-        cd vendor/github.com/containers/image/v5
+
+        # skopeo >=1.21 moved containers/image/v5 to go.podman.io/image/v5
+        if [ -d vendor/go.podman.io/image/v5 ]; then
+          IMAGE_PKG=go.podman.io/image/v5
+        else
+          IMAGE_PKG=github.com/containers/image/v5
+        fi
+
+        cd "vendor/$IMAGE_PKG"
         mkdir nix/
         touch nix/transport.go
         # The patch for alltransports.go does not apply cleanly to skopeo > 1.14,
         # filter the patch and insert the import manually here instead.
-        filterdiff -x '*/alltransports.go' ${patch} | patch -p1
-        sed -i '\#_ "github.com/containers/image/v5/tarball"#a _ "github.com/containers/image/v5/nix"' transports/alltransports/alltransports.go
+        filterdiff -x '*/alltransports.go' ${patch} | sed "s|github.com/containers/image/v5|$IMAGE_PKG|g" | patch -p1
+        sed -i "\#_ \"$IMAGE_PKG/tarball\"#a _ \"$IMAGE_PKG/nix\"" transports/alltransports/alltransports.go
         cd -
 
         # Go checks packages in the vendor directory are declared in the modules.txt file.
@@ -67,7 +75,7 @@ let
         echo '## explicit; go 1.13' >> vendor/modules.txt
         echo github.com/nlewo/nix2container/nix >> vendor/modules.txt
         echo github.com/nlewo/nix2container/types >> vendor/modules.txt
-        echo github.com/containers/image/v5/nix >> vendor/modules.txt
+        echo "$IMAGE_PKG/nix" >> vendor/modules.txt
         # All packages declared in the modules.txt file must also be required by the go.mod file.
         echo 'require (' >> go.mod
         echo '  github.com/nlewo/nix2container v1.0.0' >> go.mod
