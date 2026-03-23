@@ -57,6 +57,9 @@ let
         # skopeo >=1.21 moved containers/image/v5 to go.podman.io/image/v5
         if [ -d vendor/go.podman.io/image/v5 ]; then
           IMAGE_PKG=go.podman.io/image/v5
+          # Rewrite n2c source imports to match the new module path
+          find vendor/github.com/nlewo/nix2container -name '*.go' \
+            -exec sed -i "s|github.com/containers/image/v5|$IMAGE_PKG|g" {} +
         else
           IMAGE_PKG=github.com/containers/image/v5
         fi
