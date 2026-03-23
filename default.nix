@@ -53,6 +53,7 @@ let
       ''
         mkdir -p vendor/github.com/nlewo/nix2container/
         cp -r ${nix2container-bin.src}/* vendor/github.com/nlewo/nix2container/
+        chmod -R u+w vendor/github.com/nlewo/nix2container/
 
         # skopeo >=1.21 moved containers/image/v5 to go.podman.io/image/v5
         if [ -d vendor/go.podman.io/image/v5 ]; then
