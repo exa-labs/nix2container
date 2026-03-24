@@ -28,28 +28,8 @@ let
 
   skopeo-nix2container = pkgs.skopeo.overrideAttrs (old: {
     EXTRA_LDFLAGS = pkgs.lib.optionalString pkgs.stdenv.isDarwin "-X github.com/nlewo/nix2container/nix.useNixCaseHack=true";
-    nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.patchutils ];
+    nativeBuildInputs = old.nativeBuildInputs;
     preBuild =
-      let
-        # Needs to use fetchpatch2 to handle "git extended headers", which include
-        # lines with semantic content like "rename from" and "rename to".
-        # However, it also includes "index" lines which include the git revision(s) the patch was initially created from.
-        # These lines may include revisions of differing length, based on how Github generates them.
-        # fetchpatch2 does not filter out, but probably should    
-        fetchgitpatch = args: pkgs.fetchpatch2 (args // {
-          postFetch = (args.postFetch or "") + ''
-            sed -i \
-              -e '/^index /d' \
-              -e '/^similarity index /d' \
-              -e '/^dissimilarity index /d' \
-              $out
-          '';
-        });
-        patch = fetchgitpatch {
-          url = "https://github.com/nlewo/image/commit/c2254c998433cf02af60bf0292042bd80b96a77e.patch";
-          sha256 = "sha256-6CUjz46xD3ORgwrHwdIlSu6JUj7WLS6BOSyRGNnALHY=";
-        };
-      in
       ''
         mkdir -p vendor/github.com/nlewo/nix2container/
         cp -r ${nix2container-bin.src}/* vendor/github.com/nlewo/nix2container/
@@ -65,14 +45,15 @@ let
           IMAGE_PKG=github.com/containers/image/v5
         fi
 
-        cd "vendor/$IMAGE_PKG"
-        mkdir nix/
-        touch nix/transport.go
-        # The patch for alltransports.go does not apply cleanly to skopeo > 1.14,
-        # filter the patch and insert the import manually here instead.
-        filterdiff -x '*/alltransports.go' ${patch} | sed "s|github.com/containers/image/v5|$IMAGE_PKG|g" | patch -p1
+        # Install the nix: transport for skopeo. Instead of applying an
+        # upstream patch (fragile across skopeo versions), we ship a
+        # complete transport.go in the n2c source tree. This file also
+        # calls RecomputeLayerDigests at image-source init time so the
+        # manifest digests always match the bytes that GetBlob serves.
+        mkdir -p "vendor/$IMAGE_PKG/nix"
+        cp vendor/github.com/nlewo/nix2container/skopeo-transport/transport.go "vendor/$IMAGE_PKG/nix/transport.go"
+        sed -i "s|github.com/containers/image/v5|$IMAGE_PKG|g" "vendor/$IMAGE_PKG/nix/transport.go"
         sed -i "\#_ \"$IMAGE_PKG/tarball\"#a _ \"$IMAGE_PKG/nix\"" transports/alltransports/alltransports.go
-        cd -
 
         # Go checks packages in the vendor directory are declared in the modules.txt file.
         echo '# github.com/nlewo/nix2container v1.0.0' >> vendor/modules.txt
@@ -274,9 +255,14 @@ let
       # isolate store paths that are often updated from more stable
       # store paths, to speed up build and push time.
       layers ? [ ]
-    , # Store the layer tar in the derivation. This is useful when the
-      # layer dependencies are not bit reproducible.
-      reproducible ? true
+    , # Pre-write layer tars to disk at build time. When false (the
+      # default), TarPathsWrite writes each layer tar and computes its
+      # digest from the same bytes, so the digest always matches what
+      # LayerGetBlob serves. When true, digests are computed via
+      # TarPathsSum but blobs are regenerated on-the-fly at push time
+      # via TarPaths, which can diverge if the Go toolchain or nix
+      # store state differs between build and push machines.
+      reproducible ? false
     , # A list of file permisssions which are set when the tar layer is
       # created: these permissions are not written to the Nix store.
       #
