@@ -72,6 +72,12 @@ let
         # filter the patch and insert the import manually here instead.
         filterdiff -x '*/alltransports.go' ${patch} | sed "s|github.com/containers/image/v5|$IMAGE_PKG|g" | patch -p1
         sed -i "\#_ \"$IMAGE_PKG/tarball\"#a _ \"$IMAGE_PKG/nix\"" transports/alltransports/alltransports.go
+
+        # Patch transport.go to recompute layer digests from actual blob
+        # content at push time, preventing "Digest did not match" errors
+        # when pre-computed digests in the image JSON are stale.
+        sed -i '/^ return &nixImageSource{/i\ if err := nix.RecomputeLayerDigests(\&ref.nixImage); err != nil {\n  return nil, err\n }' nix/transport.go
+
         cd -
 
         # Go checks packages in the vendor directory are declared in the modules.txt file.
