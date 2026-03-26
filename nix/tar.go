@@ -94,10 +94,17 @@ func appendFileToTar(tw *tar.Writer, srcPath, dstPath string, info os.FileInfo, 
 	hdr.Uname = "root"
 	hdr.Gname = "root"
 
-	// Force symlink permissions to match Linux ones
-	// see https://github.com/nlewo/nix2container/issues/23
+	// Normalize file permissions to ensure reproducible tar output
+	// regardless of sandbox state, nix version, or machine.
+	// See https://github.com/nlewo/nix2container/issues/127
 	if link != "" {
 		hdr.Mode = 0o777
+	} else if info.IsDir() {
+		hdr.Mode = 0o755
+	} else if info.Mode()&0111 != 0 {
+		hdr.Mode = 0o555
+	} else {
+		hdr.Mode = 0o444
 	}
 
 	if opts != nil {
