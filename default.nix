@@ -508,13 +508,6 @@ let
 
       customizationLayer = buildLayer {
         inherit maxLayers sortBy;
-        # Use reproducible = false to pre-write layer tars at build time.
-        # Without this, the nix: transport regenerates tars on-the-fly at
-        # push time via TarPaths(), and the digest computed during the build
-        # (TarPathsSum) can differ from the bytes actually uploaded, causing
-        # "Digest did not match" errors on registries like ECR.
-        # See: https://github.com/nlewo/nix2container/issues/127
-        reproducible = false;
         perms = perms';
         copyToRoot =
           if initializeNixDatabase
