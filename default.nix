@@ -508,6 +508,12 @@ let
 
       customizationLayer = buildLayer {
         inherit maxLayers sortBy;
+        # copyToRoot uses buildEnv which creates symlink forests. A nix
+        # sandbox bug (NixOS/nix#10525, fixed in nix >=2.22.1) can cause
+        # symlinks to appear as regular files inside the sandbox, making
+        # the build-time digest (TarPathsSum) differ from the push-time
+        # tar (TarPaths). Writing the tar at build time avoids this.
+        reproducible = false;
         perms = perms';
         copyToRoot =
           if initializeNixDatabase
