@@ -274,9 +274,11 @@ let
       # isolate store paths that are often updated from more stable
       # store paths, to speed up build and push time.
       layers ? [ ]
-    , # Store the layer tar in the derivation. This is useful when the
-      # layer dependencies are not bit reproducible.
-      reproducible ? true
+    , # Store the layer tar in the derivation. When false the tar is
+      # written at build time so the push-time digest always matches.
+      # Default false to avoid nix sandbox symlink bugs (NixOS/nix#10525)
+      # that cause build-time vs push-time tar divergence.
+      reproducible ? false
     , # A list of file permisssions which are set when the tar layer is
       # created: these permissions are not written to the Nix store.
       #
@@ -508,6 +510,7 @@ let
 
       customizationLayer = buildLayer {
         inherit maxLayers sortBy;
+        reproducible = false;
         perms = perms';
         copyToRoot =
           if initializeNixDatabase
