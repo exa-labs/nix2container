@@ -99,6 +99,12 @@ func getV1Image(image types.Image) (imageV1 v1.Image, err error) {
 // NewImageFromFile creates an Image from a JSON file describing an
 // image. This file has usually been created by Nix through the
 // nix2container binary.
+//
+// For reproducible layers (those with Paths but no LayerPath), the
+// digest is recomputed from the actual store paths on disk. This is
+// necessary because some Nix implementations (e.g. Determinate Nix)
+// rewrite store paths inside the build sandbox, causing the build-time
+// digest to differ from the push-time tar content.
 func NewImageFromFile(filename string) (image types.Image, err error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -113,7 +119,34 @@ func NewImageFromFile(filename string) (image types.Image, err error) {
 	if err != nil {
 		return image, err
 	}
+	if err := resolveLayerDigests(&image); err != nil {
+		return image, err
+	}
 	return image, nil
+}
+
+// resolveLayerDigests recomputes the digest of reproducible layers
+// from the actual store paths on disk. A layer is reproducible when
+// it has Paths (tar is generated on-the-fly) and no LayerPath (no
+// pre-built tar on disk).
+func resolveLayerDigests(image *types.Image) error {
+	for i := range image.Layers {
+		layer := &image.Layers[i]
+		if layer.Paths == nil || layer.LayerPath != "" {
+			continue
+		}
+		d, sz, err := TarPathsSum(layer.Paths)
+		if err != nil {
+			return fmt.Errorf("recomputing digest for layer %d: %w", i, err)
+		}
+		if layer.Digest != d.String() {
+			logrus.Infof("Layer %d digest updated: %s -> %s (store paths differ from build time)", i, layer.Digest, d.String())
+		}
+		layer.Digest = d.String()
+		layer.DiffIDs = d.String()
+		layer.Size = sz
+	}
+	return nil
 }
 
 // NewImageFromDir builds an Image based on an directory populated by
