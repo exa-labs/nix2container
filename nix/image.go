@@ -100,11 +100,14 @@ func getV1Image(image types.Image) (imageV1 v1.Image, err error) {
 // image. This file has usually been created by Nix through the
 // nix2container binary.
 //
-// For reproducible layers (those with Paths but no LayerPath), the
-// digest is recomputed from the actual store paths on disk. This is
-// necessary because some Nix implementations (e.g. Determinate Nix)
-// rewrite store paths inside the build sandbox, causing the build-time
-// digest to differ from the push-time tar content.
+// The returned Image contains the layer metadata as-is from the JSON
+// file.  Reproducible layers (those with Paths but no LayerPath)
+// still reference nix store paths and will regenerate their tar
+// on-the-fly when GetBlob is called.
+//
+// For push workflows where digest consistency is critical, callers
+// should follow up with MaterializeReproducibleLayers to write each
+// reproducible layer's tar to disk once and serve those exact bytes.
 func NewImageFromFile(filename string) (image types.Image, err error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -119,25 +122,50 @@ func NewImageFromFile(filename string) (image types.Image, err error) {
 	if err != nil {
 		return image, err
 	}
-	if err := resolveLayerDigests(&image); err != nil {
-		return image, err
-	}
 	return image, nil
 }
 
-// resolveLayerDigests recomputes the digest of reproducible layers
-// from the actual store paths on disk. A layer is reproducible when
-// it has Paths (tar is generated on-the-fly) and no LayerPath (no
+// MaterializeReproducibleLayers writes the tar for each reproducible
+// layer to a temporary directory and updates the layer to reference
+// that file. A layer is reproducible when it has Paths (tar is
+// generated on-the-fly from nix store paths) and no LayerPath (no
 // pre-built tar on disk).
-func resolveLayerDigests(image *types.Image) error {
+//
+// By materializing to disk we guarantee that GetBlob serves the
+// exact same bytes that were hashed to produce the manifest digest.
+// Previously, TarPaths was called twice (once here for the digest,
+// once in GetBlob for the content) and any non-determinism between
+// the two passes caused "Digest did not match" errors.
+//
+// Returns the path of the temporary directory (empty string if no
+// reproducible layers exist). The caller must remove it when done.
+func MaterializeReproducibleLayers(image *types.Image) (string, error) {
+	// Quick scan: bail out early if there are no reproducible layers.
+	hasReproducible := false
+	for _, layer := range image.Layers {
+		if layer.Paths != nil && layer.LayerPath == "" {
+			hasReproducible = true
+			break
+		}
+	}
+	if !hasReproducible {
+		return "", nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "n2c-layers-")
+	if err != nil {
+		return "", fmt.Errorf("creating temp dir for layer tars: %w", err)
+	}
+
 	for i := range image.Layers {
 		layer := &image.Layers[i]
 		if layer.Paths == nil || layer.LayerPath != "" {
 			continue
 		}
-		d, sz, err := TarPathsSum(layer.Paths)
+		lp, d, sz, err := TarPathsWrite(layer.Paths, tmpDir)
 		if err != nil {
-			return fmt.Errorf("recomputing digest for layer %d: %w", i, err)
+			os.RemoveAll(tmpDir)
+			return "", fmt.Errorf("materializing layer %d: %w", i, err)
 		}
 		if layer.Digest != d.String() {
 			logrus.Infof("Layer %d digest updated: %s -> %s (store paths differ from build time)", i, layer.Digest, d.String())
@@ -145,8 +173,9 @@ func resolveLayerDigests(image *types.Image) error {
 		layer.Digest = d.String()
 		layer.DiffIDs = d.String()
 		layer.Size = sz
+		layer.LayerPath = lp
 	}
-	return nil
+	return tmpDir, nil
 }
 
 // NewImageFromDir builds an Image based on an directory populated by

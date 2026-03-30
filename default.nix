@@ -31,24 +31,186 @@ let
     nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.patchutils ];
     preBuild =
       let
-        # Needs to use fetchpatch2 to handle "git extended headers", which include
-        # lines with semantic content like "rename from" and "rename to".
-        # However, it also includes "index" lines which include the git revision(s) the patch was initially created from.
-        # These lines may include revisions of differing length, based on how Github generates them.
-        # fetchpatch2 does not filter out, but probably should    
-        fetchgitpatch = args: pkgs.fetchpatch2 (args // {
-          postFetch = (args.postFetch or "") + ''
-            sed -i \
-              -e '/^index /d' \
-              -e '/^similarity index /d' \
-              -e '/^dissimilarity index /d' \
-              $out
-          '';
-        });
-        patch = fetchgitpatch {
-          url = "https://github.com/nlewo/image/commit/c2254c998433cf02af60bf0292042bd80b96a77e.patch";
-          sha256 = "sha256-6CUjz46xD3ORgwrHwdIlSu6JUj7WLS6BOSyRGNnALHY=";
-        };
+        # The nix: transport is written inline (not via an external patch)
+        # so that it stays in sync with the nix2container Go API and
+        # calls MaterializeReproducibleLayers to write layer tars to
+        # disk before push, preventing digest mismatch errors.
+        transportGo = pkgs.writeText "transport.go" ''
+          package nix
+
+          import (
+          	"context"
+          	"encoding/json"
+          	"fmt"
+          	"os"
+          	"github.com/containers/image/v5/docker/reference"
+          	"github.com/containers/image/v5/image"
+          	"github.com/containers/image/v5/manifest"
+          	"github.com/containers/image/v5/transports"
+          	"github.com/containers/image/v5/types"
+          	"github.com/nlewo/nix2container/nix"
+          	nixtypes "github.com/nlewo/nix2container/types"
+          	digest "github.com/opencontainers/go-digest"
+          	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
+          	"github.com/pkg/errors"
+          	"io"
+          )
+
+          func init() {
+          	transports.Register(Transport)
+          }
+
+          // Transport is an ImageTransport for nix2container JSON image specification.
+          var Transport = nixTransport{}
+
+          type nixTransport struct{}
+
+          func (t nixTransport) Name() string {
+          	return "nix"
+          }
+
+          type nixReference struct {
+          	path     string
+          	nixImage nixtypes.Image
+          	tempDir  string
+          }
+
+          func (t nixTransport) ParseReference(reference string) (types.ImageReference, error) {
+          	nixImage, err := nix.NewImageFromFile(reference)
+          	if err != nil {
+          		return nil, err
+          	}
+          	// Materialize reproducible layers to temp files so that
+          	// GetBlob serves the exact bytes used to compute the digest.
+          	tempDir, err := nix.MaterializeReproducibleLayers(&nixImage)
+          	if err != nil {
+          		return nil, err
+          	}
+          	imageReference := nixReference{
+          		path:     reference,
+          		nixImage: nixImage,
+          		tempDir:  tempDir,
+          	}
+          	return imageReference, nil
+          }
+
+          func (t nixTransport) ValidatePolicyConfigurationScope(scope string) error {
+          	return errors.New("nix: does not support any scopes except the default empty one")
+          }
+
+          func (ref nixReference) StringWithinTransport() string {
+          	return fmt.Sprintf("%s", ref.path)
+          }
+
+          func (ref nixReference) Transport() types.ImageTransport {
+          	return Transport
+          }
+
+          func (ref nixReference) DeleteImage(ctx context.Context, sys *types.SystemContext) error {
+          	return errors.New("Deleting images not implemented for nix: images")
+          }
+
+          func (ref nixReference) DockerReference() reference.Named {
+          	return nil
+          }
+
+          func (ref nixReference) NewImage(ctx context.Context, sys *types.SystemContext) (types.ImageCloser, error) {
+          	src, err := newImageSource(ctx, sys, ref)
+          	if err != nil {
+          		return nil, err
+          	}
+          	return image.FromSource(ctx, sys, src)
+          }
+
+          func (ref nixReference) NewImageSource(ctx context.Context, sys *types.SystemContext) (types.ImageSource, error) {
+          	return newImageSource(ctx, sys, ref)
+          }
+
+          func (ref nixReference) PolicyConfigurationIdentity() string {
+          	return ""
+          }
+
+          func (ref nixReference) PolicyConfigurationNamespaces() []string {
+          	return []string{}
+          }
+
+          func (ref nixReference) NewImageDestination(ctx context.Context, sys *types.SystemContext) (types.ImageDestination, error) {
+          	return nil, errors.New("It is not possible to copy to nix: images")
+          }
+
+          func newImageSource(ctx context.Context, sys *types.SystemContext, ref nixReference) (types.ImageSource, error) {
+          	return &nixImageSource{
+          		ref: ref,
+          	}, nil
+          }
+
+          type nixImageSource struct {
+          	ref nixReference
+          }
+
+          func (s *nixImageSource) Close() error {
+          	if s.ref.tempDir != "" {
+          		os.RemoveAll(s.ref.tempDir)
+          	}
+          	return nil
+          }
+
+          func (s *nixImageSource) GetBlob(ctx context.Context, info types.BlobInfo, cache types.BlobInfoCache) (io.ReadCloser, int64, error) {
+          	rc, _, err := nix.GetBlob(s.ref.nixImage, info.Digest)
+          	return rc, -1, err
+          }
+
+          func (s *nixImageSource) GetManifest(ctx context.Context, instanceDigest *digest.Digest) ([]byte, string, error) {
+          	configDigest, size, err := nix.GetConfigDigest(s.ref.nixImage)
+          	if err != nil {
+          		return nil, "", err
+          	}
+          	config := imgspecv1.Descriptor{
+          		MediaType: imgspecv1.MediaTypeImageConfig,
+          		Size:      size,
+          		Digest:    configDigest,
+          	}
+
+          	var layers []imgspecv1.Descriptor
+          	for _, layer := range s.ref.nixImage.Layers {
+          		digest, err := digest.Parse(layer.Digest)
+          		if err != nil {
+          			return nil, "", err
+          		}
+          		layers = append(layers, imgspecv1.Descriptor{
+          			MediaType: layer.MediaType,
+          			Size:      layer.Size,
+          			Digest:    digest,
+          		})
+          	}
+
+          	m := manifest.OCI1FromComponents(
+          		config,
+          		layers,
+          	)
+          	manifestBytes, err := json.Marshal(&m)
+          	if err != nil {
+          		return nil, "", err
+          	}
+          	return manifestBytes, imgspecv1.MediaTypeImageManifest, nil
+          }
+
+          func (s *nixImageSource) GetSignatures(ctx context.Context, instanceDigest *digest.Digest) ([][]byte, error) {
+          	return [][]byte{}, nil
+          }
+
+          func (s *nixImageSource) HasThreadSafeGetBlob() bool {
+          	return true
+          }
+
+          func (s *nixImageSource) LayerInfosForCopy(ctx context.Context, instanceDigest *digest.Digest) ([]types.BlobInfo, error) {
+          	return nil, nil
+          }
+
+          func (s *nixImageSource) Reference() types.ImageReference {
+          	return s.ref
+          }
+        '';
       in
       ''
         mkdir -p vendor/github.com/nlewo/nix2container/
@@ -66,11 +228,10 @@ let
         fi
 
         cd "vendor/$IMAGE_PKG"
-        mkdir nix/
-        touch nix/transport.go
-        # The patch for alltransports.go does not apply cleanly to skopeo > 1.14,
-        # filter the patch and insert the import manually here instead.
-        filterdiff -x '*/alltransports.go' ${patch} | sed "s|github.com/containers/image/v5|$IMAGE_PKG|g" | patch -p1
+        mkdir -p nix/
+        # Write the nix: transport inline, with imports rewritten to match
+        # the containers/image module path used by this version of skopeo.
+        sed "s|github.com/containers/image/v5|$IMAGE_PKG|g" ${transportGo} > nix/transport.go
         sed -i "\#_ \"$IMAGE_PKG/tarball\"#a _ \"$IMAGE_PKG/nix\"" transports/alltransports/alltransports.go
         cd -
 
