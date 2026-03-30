@@ -32,9 +32,9 @@ let
     preBuild =
       let
         # The nix: transport is written inline (not via an external patch)
-        # so that it stays in sync with the nix2container Go API, in
-        # particular the NewImageFromFile signature which now returns a
-        # tempDir that must be cleaned up.
+        # so that it stays in sync with the nix2container Go API and
+        # calls MaterializeReproducibleLayers to write layer tars to
+        # disk before push, preventing digest mismatch errors.
         transportGo = pkgs.writeText "transport.go" ''
           package nix
 
@@ -76,7 +76,13 @@ let
           }
 
           func (t nixTransport) ParseReference(reference string) (types.ImageReference, error) {
-          	nixImage, tempDir, err := nix.NewImageFromFile(reference)
+          	nixImage, err := nix.NewImageFromFile(reference)
+          	if err != nil {
+          		return nil, err
+          	}
+          	// Materialize reproducible layers to temp files so that
+          	// GetBlob serves the exact bytes used to compute the digest.
+          	tempDir, err := nix.MaterializeReproducibleLayers(&nixImage)
           	if err != nil {
           		return nil, err
           	}

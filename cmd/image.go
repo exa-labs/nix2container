@@ -125,10 +125,7 @@ func image(outputFilename, imageConfigPath string, fromImageFilename string, lay
 	}
 
 	if fromImageFilename != "" {
-		fromImage, tempDir, err := nix.NewImageFromFile(fromImageFilename)
-		if tempDir != "" {
-			defer os.RemoveAll(tempDir)
-		}
+		fromImage, err := nix.NewImageFromFile(fromImageFilename)
 		if err != nil {
 			return err
 		}

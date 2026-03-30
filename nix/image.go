@@ -100,37 +100,32 @@ func getV1Image(image types.Image) (imageV1 v1.Image, err error) {
 // image. This file has usually been created by Nix through the
 // nix2container binary.
 //
-// For reproducible layers (those with Paths but no LayerPath), the
-// layer tar is materialized to a temporary directory on disk and the
-// digest is computed from that file. This guarantees that GetBlob
-// serves the exact same bytes that were used to compute the digest,
-// eliminating any possibility of non-determinism between the two
-// tar generation passes.
+// The returned Image contains the layer metadata as-is from the JSON
+// file.  Reproducible layers (those with Paths but no LayerPath)
+// still reference nix store paths and will regenerate their tar
+// on-the-fly when GetBlob is called.
 //
-// The returned tempDir (if non-empty) must be cleaned up by the
-// caller when the image is no longer needed.
-func NewImageFromFile(filename string) (image types.Image, tempDir string, err error) {
+// For push workflows where digest consistency is critical, callers
+// should follow up with MaterializeReproducibleLayers to write each
+// reproducible layer's tar to disk once and serve those exact bytes.
+func NewImageFromFile(filename string) (image types.Image, err error) {
 	file, err := os.Open(filename)
 	if err != nil {
-		return image, "", err
+		return image, err
 	}
 	defer file.Close()
 	content, err := io.ReadAll(file)
 	if err != nil {
-		return image, "", err
+		return image, err
 	}
 	err = json.Unmarshal(content, &image)
 	if err != nil {
-		return image, "", err
+		return image, err
 	}
-	tempDir, err = materializeReproducibleLayers(&image)
-	if err != nil {
-		return image, "", err
-	}
-	return image, tempDir, nil
+	return image, nil
 }
 
-// materializeReproducibleLayers writes the tar for each reproducible
+// MaterializeReproducibleLayers writes the tar for each reproducible
 // layer to a temporary directory and updates the layer to reference
 // that file. A layer is reproducible when it has Paths (tar is
 // generated on-the-fly from nix store paths) and no LayerPath (no
@@ -144,7 +139,7 @@ func NewImageFromFile(filename string) (image types.Image, tempDir string, err e
 //
 // Returns the path of the temporary directory (empty string if no
 // reproducible layers exist). The caller must remove it when done.
-func materializeReproducibleLayers(image *types.Image) (string, error) {
+func MaterializeReproducibleLayers(image *types.Image) (string, error) {
 	// Quick scan: bail out early if there are no reproducible layers.
 	hasReproducible := false
 	for _, layer := range image.Layers {
