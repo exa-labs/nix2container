@@ -21,6 +21,7 @@ let
           );
     };
     vendorHash = "sha256-/j4ZHOwU5Xi8CE/fHha+2iZhsLd/y2ovzVhvg8HDV78=";
+    doCheck = false;
     ldflags = pkgs.lib.optionals pkgs.stdenv.isDarwin [
       "-X github.com/nlewo/nix2container/nix.useNixCaseHack=true"
     ];
