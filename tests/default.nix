@@ -94,6 +94,48 @@ let
       command = "nix-store -qR ${pkgs.hello}";
       pattern = "${pkgs.hello}";
     };
+    # The schema marker and WAL mode are what let several processes open the store at once.
+    # Checked on the image: racing processes reproduce the bug, but only sometimes.
+    nixDatabaseIsUsableConcurrently = pkgs.runCommand "test-script" { buildInputs = [pkgs.jq pkgs.gnutar pkgs.sqlite]; } ''
+      set -e
+      ${examples.nix.copyTo}/bin/copy-to dir://$PWD/image
+      cd $PWD/image
+
+      # List to files first: with `pipefail`, a `grep -q` that matches kills `tar` with
+      # SIGPIPE and the pipeline reports failure.
+      for layer in $(jq -r '.layers[].digest' manifest.json | cut -d":" -f2); do
+        tar -tf "$layer" > "entries-$layer"
+      done
+
+      set -- $(grep -lE '(^|/)nix/var/nix/db/db\.sqlite$' entries-* || true)
+      if [ $# -eq 0 ]; then
+        echo "Error: no layer holds the Nix database"
+        exit 1
+      fi
+      entries=$1
+      dbLayer=''${entries#entries-}
+
+      echo "Checking the schema version marker is shipped..."
+      if ! grep -E '(^|/)nix/var/nix/db/schema$' "$entries" > /dev/null; then
+        echo "Error: the image ships no nix/var/nix/db/schema"
+        exit 1
+      fi
+
+      echo "Checking the database is in WAL mode..."
+      dbName=$(awk '/(^|\/)nix\/var\/nix\/db\/db\.sqlite$/ { print; exit }' "$entries")
+      tar -xOf "$dbLayer" "$dbName" > db.sqlite
+      journalMode=$(sqlite3 db.sqlite 'PRAGMA journal_mode;')
+      if [ "$journalMode" != "wal" ]; then
+        echo "Error: expected the database in WAL mode, got $journalMode"
+        exit 1
+      fi
+
+      echo Test passed
+      # TODO: actually this test doesn't need to be run
+      mkdir -p $out/bin
+      echo echo Test passed > $out/bin/test-script
+      chmod a+x $out/bin/test-script
+    '';
     # The /nix have to be explicitly present in the archive with 755 perms
     nonRegressionIssue12 = pkgs.runCommand "test-script" { buildInputs = [pkgs.jq pkgs.gnutar]; } ''
       set -e

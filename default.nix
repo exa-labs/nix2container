@@ -537,6 +537,14 @@ let
       sqlite3 $out/nix/var/nix/db/db.sqlite '.read db.dump'
       mkdir -p $out/nix/store/.links
 
+      # The dump doesn't carry the schema version marker. Without it Nix takes the store for a
+      # new one, and concurrent processes race to reinitialize it.
+      cp $PWD/nix/var/nix/db/schema $out/nix/var/nix/db/schema
+
+      # sqlite3 leaves the DB in `delete` mode, while Nix switches to WAL on open. That switch
+      # takes an exclusive lock, so concurrent openers fail with "database is busy".
+      sqlite3 $out/nix/var/nix/db/db.sqlite 'pragma journal_mode = wal' > /dev/null
+
       mkdir -p $out/nix/var/nix/gcroots/docker/
       for i in $(jq -r 'map("\(.path)\n") | add' ${closureGraphJson}); do
         ln -s $i $out/nix/var/nix/gcroots/docker/$(basename $i)
